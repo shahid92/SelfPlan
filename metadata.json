@@ -1,0 +1,7 @@
+{
+  "name": "SelfPlan",
+  "description": "A personalized nutrition and health tracking app that generates a daily schedule based on your BMI, location, and goals. It provides meal plans with recipe images, workout routines with illustrations, hydration reminders, and a space for daily notes to help you achieve your fitness goals.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
