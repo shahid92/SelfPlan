@@ -101,7 +101,7 @@ export const generateImage = async (prompt: string): Promise<string> => {
         for (const part of response.candidates?.[0]?.content?.parts || []) {
             if (part.inlineData) {
                 const base64ImageBytes: string = part.inlineData.data;
-                return `data:image/png;base64,${base64ImageBytes}`;
+                return `data:${part.inlineData.mimeType};base64,${base64ImageBytes}`;
             }
         }
         throw new Error("No image data found in response.");
@@ -110,6 +110,83 @@ export const generateImage = async (prompt: string): Promise<string> => {
         return ""; // Return empty string on failure to not break the UI
     }
 };
+
+export const editImage = async (base64ImageData: string, prompt: string): Promise<string> => {
+    try {
+        const mimeType = base64ImageData.substring(5, base64ImageData.indexOf(';'));
+        const data = base64ImageData.split(',')[1];
+
+        const imagePart = {
+            inlineData: { mimeType, data },
+        };
+        const textPart = { text: prompt };
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image',
+            contents: { parts: [imagePart, textPart] },
+            config: {
+                responseModalities: [Modality.IMAGE],
+            },
+        });
+
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+                const base64ImageBytes: string = part.inlineData.data;
+                return `data:${part.inlineData.mimeType};base64,${base64ImageBytes}`;
+            }
+        }
+        throw new Error("No edited image data found in response.");
+    } catch (error) {
+        console.error("Error editing image:", error);
+        throw new Error("Failed to edit image. Please try a different prompt.");
+    }
+};
+
+
+export const analyzeDailyNotes = async (notes: string, tasks: ScheduleTask[], userData: UserData): Promise<string> => {
+    const completedTasks = tasks.filter(t => t.completed).map(t => `${t.title}: ${t.description}`).join('\n');
+    const pendingTasks = tasks.filter(t => !t.completed).map(t => `${t.title}: ${t.description}`).join('\n');
+
+    const prompt = `
+        As an expert wellness and productivity coach, analyze the user's day based on their goals, completed tasks, pending tasks, and personal notes.
+        Provide insightful, motivational, and actionable feedback. Use a positive and encouraging tone.
+
+        User's Primary Goal: ${userData.goal}
+
+        Tasks Completed Today:
+        ${completedTasks || "None"}
+
+        Tasks Not Completed Today:
+        ${pendingTasks || "None"}
+
+        User's Personal Notes for the Day:
+        """
+        ${notes}
+        """
+
+        Your analysis should:
+        1. Acknowledge the user's progress and effort.
+        2. Connect their activities (or lack thereof) to their primary goal.
+        3. Offer specific, constructive suggestions for the next day based on their notes and pending tasks.
+        4. Keep the feedback concise, empathetic, and easy to understand.
+        5. Format the response using markdown.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-pro",
+            contents: prompt,
+            config: {
+                thinkingConfig: { thinkingBudget: 32768 },
+            },
+        });
+        return response.text;
+    } catch (error) {
+        console.error("Error analyzing notes:", error);
+        throw new Error("Failed to get insights. The AI may be busy, please try again later.");
+    }
+};
+
 
 export const getMealImagePrompt = (description: string) => 
     `A vibrant, appetizing photo of ${description}, professionally shot for a health food blog, on a clean white background.`;

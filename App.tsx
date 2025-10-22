@@ -1,7 +1,13 @@
-
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import useLocalStorage from './hooks/useLocalStorage';
-import { generateSchedule, generateImage, getMealImagePrompt, getWorkoutImagePrompt } from './services/geminiService';
+import { 
+    generateSchedule, 
+    generateImage, 
+    getMealImagePrompt, 
+    getWorkoutImagePrompt,
+    editImage,
+    analyzeDailyNotes
+} from './services/geminiService';
 import type { UserData, ScheduleTask } from './types';
 import Header from './components/Header';
 import SetupForm from './components/SetupForm';
@@ -13,43 +19,49 @@ const App: React.FC = () => {
     const [dailyNotes, setDailyNotes] = useLocalStorage<string>('dailyNotes', '');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [lastAttemptedData, setLastAttemptedData] = useState<UserData | null>(null);
+
 
     const handleReset = () => {
         setUserData(null);
         setSchedule([]);
         setDailyNotes('');
         setError(null);
+        setLastAttemptedData(null);
         localStorage.clear();
     };
 
     const fetchAndSetImages = useCallback(async (tasks: ScheduleTask[]) => {
-        const imagePromises = tasks.map(async (task) => {
-            if (task.type === 'Meal' || task.type === 'Workout') {
-                const prompt = task.type === 'Meal'
-                    ? getMealImagePrompt(task.description)
-                    : getWorkoutImagePrompt(task.description);
-                const imageUrl = await generateImage(prompt);
-                return { ...task, imageUrl, imageLoading: false };
-            }
-            return task;
-        });
+        try {
+            const imagePromises = tasks.map(async (task) => {
+                if ((task.type === 'Meal' || task.type === 'Workout') && !task.imageUrl) {
+                    const prompt = task.type === 'Meal'
+                        ? getMealImagePrompt(task.description)
+                        : getWorkoutImagePrompt(task.description);
+                    const imageUrl = await generateImage(prompt);
+                    return { ...task, imageUrl, imageLoading: false };
+                }
+                return { ...task, imageLoading: false };
+            });
 
-        const tasksWithImages = await Promise.all(imagePromises);
-        setSchedule(tasksWithImages);
+            const tasksWithImages = await Promise.all(imagePromises);
+            setSchedule(tasksWithImages);
+        } catch (imageError) {
+            console.error("A background error occurred while fetching images:", imageError);
+        }
     }, [setSchedule]);
 
 
     const handleSetupComplete = useCallback(async (data: UserData) => {
         setIsLoading(true);
         setError(null);
-        setUserData(data);
+        setLastAttemptedData(data); 
 
         try {
             const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(resolve, reject);
+                navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
             });
-            const { latitude, longitude } = position.coords;
-            // Simple weather context, Gemini can infer from this
+            const { latitude } = position.coords;
             const weather = latitude > 20 ? "warm and sunny" : "cool and temperate";
 
             const generatedTasks = await generateSchedule(data, weather);
@@ -61,31 +73,101 @@ const App: React.FC = () => {
                 imageLoading: task.type === 'Meal' || task.type === 'Workout',
             }));
             
+            setUserData(data);
             setSchedule(initialSchedule);
             setIsLoading(false);
 
-            // Fetch images in the background
             fetchAndSetImages(initialSchedule);
 
         } catch (err) {
             console.error(err);
-            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-            setError(`Failed to generate your plan. ${errorMessage}`);
+            let specificMessage = 'An unknown error occurred. Please try again.';
+            if (err instanceof GeolocationPositionError) {
+                specificMessage = 'Could not get your location. Please enable location permissions in your browser settings and try again.';
+            } else if (err instanceof Error) {
+                if (err.message.includes('API')) {
+                     specificMessage = 'There was a problem contacting the AI service. It might be busy. Please wait a moment and try again.';
+                } else {
+                    specificMessage = err.message;
+                }
+            }
+
+            setError(specificMessage);
             setIsLoading(false);
-            // Don't keep user data if plan generation fails
             setUserData(null);
         }
-    }, [setUserData, setSchedule, fetchAndSetImages]);
+    }, [setUserData, setSchedule, fetchAndSetImages, setLastAttemptedData]);
+    
+    const handleRetry = () => {
+        if (lastAttemptedData) {
+            handleSetupComplete(lastAttemptedData);
+        }
+    };
+
+    const handleEditImage = async (taskId: string, prompt: string) => {
+        const taskIndex = schedule.findIndex(t => t.id === taskId);
+        if (taskIndex === -1 || !schedule[taskIndex].imageUrl) {
+            throw new Error("Task or original image not found.");
+        }
+    
+        const originalImageUrl = schedule[taskIndex].imageUrl!;
+    
+        setSchedule(currentSchedule =>
+          currentSchedule.map(t =>
+            t.id === taskId ? { ...t, imageLoading: true } : t
+          )
+        );
+    
+        try {
+          const newImageUrl = await editImage(originalImageUrl, prompt);
+    
+          setSchedule(currentSchedule =>
+            currentSchedule.map(t =>
+              t.id === taskId
+                ? { ...t, imageUrl: newImageUrl, imageLoading: false }
+                : t
+            )
+          );
+        } catch (err) {
+          console.error("Failed to edit image:", err);
+          setSchedule(currentSchedule =>
+            currentSchedule.map(t =>
+              t.id === taskId ? { ...t, imageLoading: false } : t
+            )
+          );
+          throw err;
+        }
+    };
+
+    const handleAnalyzeNotes = async (): Promise<string> => {
+        if (!userData) {
+          throw new Error("User data is not available.");
+        }
+        if (!dailyNotes.trim()) {
+          return "Please write some notes before analyzing.";
+        }
+        return await analyzeDailyNotes(dailyNotes, schedule, userData);
+    };
 
     return (
         <div className="min-h-screen bg-slate-50 text-gray-800">
             <Header onReset={userData ? handleReset : undefined} />
             <main>
-                {error && (
+                {error && !isLoading && (
                     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
                         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4" role="alert">
-                            <p className="font-bold">Error</p>
-                            <p>{error}</p>
+                             <div className="flex justify-between items-center">
+                                <div>
+                                    <p className="font-bold">Couldn't Generate Plan</p>
+                                    <p>{error}</p>
+                                </div>
+                                <button
+                                    onClick={handleRetry}
+                                    className="ml-4 flex-shrink-0 px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-red-700 bg-red-200 hover:bg-red-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-red-100 focus:ring-red-600 transition"
+                                >
+                                    Retry
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -97,6 +179,8 @@ const App: React.FC = () => {
                         setSchedule={setSchedule}
                         dailyNotes={dailyNotes}
                         setDailyNotes={setDailyNotes}
+                        onEditImage={handleEditImage}
+                        onAnalyzeNotes={handleAnalyzeNotes}
                     />
                 )}
             </main>

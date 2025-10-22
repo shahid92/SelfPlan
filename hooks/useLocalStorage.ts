@@ -1,7 +1,8 @@
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
-function useLocalStorage<T,>(key: string, initialValue: T): [T, (value: T) => void] {
+// FIX: Updated the type signature to allow a function updater, which is a common pattern for state setters in React.
+function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((prevState: T) => T)) => void] {
   const [storedValue, setStoredValue] = useState<T>(() => {
     try {
       const item = window.localStorage.getItem(key);
@@ -12,7 +13,7 @@ function useLocalStorage<T,>(key: string, initialValue: T): [T, (value: T) => vo
     }
   });
 
-  const setValue = (value: T) => {
+  const setValue = (value: T | ((prevState: T) => T)) => {
     try {
       const valueToStore = value instanceof Function ? value(storedValue) : value;
       setStoredValue(valueToStore);
